@@ -255,19 +255,51 @@ def _get_alphaevolve_config(config_obj: Config) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# Insights are fed back to later generations; an error's cause is at the end
+# of a log, so long texts keep their tail.
+_MAX_INSIGHT_CHARS = 4000
+
+
+def _is_score(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _insight(label: str, value: Any) -> dict:
+    text = value.decode(errors="replace") if isinstance(value, bytes) else str(value)
+    if len(text) > _MAX_INSIGHT_CHARS:
+        text = "..." + text[-_MAX_INSIGHT_CHARS:]
+    return {"label": label, "text": text}
+
+
+def _error_evaluation(message: str) -> dict:
+    return {
+        "scores": {"scores": []},
+        "insights": {"insights": [_insight("error", message)]},
+    }
+
+
 def _metrics_to_ae_scores(metrics: dict) -> dict:
-    """Convert a skydiscover metrics dict to AlphaEvolve score format.
+    """Convert a skydiscover evaluate() dict to AlphaEvolve's evaluation format.
+
+    Numeric values become ``scores``, the metrics AlphaEvolve optimizes.
+    Everything else -- non-numeric values and the ``artifacts`` dict of
+    ``EvaluationResult.to_dict()`` -- becomes ``insights``, which AlphaEvolve
+    does not optimize but shows to later generations (e.g. why a build failed).
 
     Returns the **pre-wrapped** format so that
     ``AlphaEvolveExperiment.evaluator()`` detects the ``scores`` key and
     passes through without legacy wrapping.
     """
+    artifacts = metrics.get("artifacts")
+    values = {k: v for k, v in metrics.items() if k != "artifacts"}
     scores_list = [
-        {"metric": k, "score": float(v)}
-        for k, v in metrics.items()
-        if isinstance(v, (int, float)) and not isinstance(v, bool)
+        {"metric": k, "score": float(v)} for k, v in values.items() if _is_score(v)
     ]
-    return {"scores": {"scores": scores_list}, "insights": {}}
+    extra = {k: v for k, v in values.items() if not _is_score(v)}
+    if isinstance(artifacts, dict):
+        extra.update(artifacts)
+    insights = [_insight(k, v) for k, v in extra.items() if v not in (None, "", b"")]
+    return {"scores": {"scores": scores_list}, "insights": {"insights": insights}}
 
 
 def _ae_scores_to_metrics(evaluation: dict) -> dict:
@@ -327,10 +359,7 @@ def _make_alphaevolve_evaluator(
     def ae_evaluator(program: dict) -> dict:
         files = program.get("content", {}).get("files", [])
         if not files:
-            return {
-                "scores": {"scores": []},
-                "insights": {"error": "No files in candidate"},
-            }
+            return _error_evaluation("No files in candidate")
 
         if len(files) > 1:
             logger.warning(
@@ -375,7 +404,7 @@ def _make_alphaevolve_evaluator(
                         id=str(uuid.uuid4()),
                         solution=code,
                         language="python",
-                        metrics=dict(metrics),
+                        metrics={k: v for k, v in metrics.items() if _is_score(v)},
                         iteration_found=eval_counter[0],
                         generation=eval_counter[0],
                     )
@@ -388,10 +417,7 @@ def _make_alphaevolve_evaluator(
 
         except Exception as e:
             logger.warning("AlphaEvolve evaluator error: %s", e)
-            return {
-                "scores": {"scores": []},
-                "insights": {"error": str(e)},
-            }
+            return _error_evaluation(str(e))
         finally:
             try:
                 os.unlink(tmp.name)
