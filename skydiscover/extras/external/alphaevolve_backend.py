@@ -555,6 +555,18 @@ async def run(
         evaluator_path, monitor_callback
     )
 
+    # 4b. Score the seed with that evaluator instead of registering a fixed
+    #     0.0: otherwise a working seed ranks with broken candidates, the
+    #     search has no baseline, and the many candidates evolved from the
+    #     seed see no insights. Off with alphaevolve.evaluate_initial_program.
+    if ae_config.get("evaluate_initial_program", True):
+        import asyncio as _asyncio
+
+        logger.info("Evaluating the initial program before starting")
+        initial_program["evaluation"] = await _asyncio.to_thread(
+            evaluator, initial_program
+        )
+
     # 5. Create experiment
     num_evaluators = ae_config.get("num_evaluators", 1)
     experiment = AlphaEvolveExperiment(
