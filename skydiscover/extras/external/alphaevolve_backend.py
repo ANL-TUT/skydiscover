@@ -476,8 +476,10 @@ def _extract_best_program(
     Queries the API for programs sorted by score descending and returns
     the top result's code and metrics.
     """
+    # order_by takes metric names; "score" matches no metric unless one is
+    # named that, which leaves only the create_time tie-breaker (newest first).
     response = experiment.list_programs(
-        params={"order_by": "score desc"}
+        params={"order_by": f"{metric_name} desc"}
     )
     if not response or "alphaEvolvePrograms" not in response:
         return ("", {})
